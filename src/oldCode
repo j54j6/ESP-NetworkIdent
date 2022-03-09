@@ -1,0 +1,362 @@
+if(!autoAddRunning && strcmp(serviceName, "n.S") != 0 && strcmp(lastAutoAddRequest.serviceName, "n.S") == 0) //init. autoAdd and set all Variables
+    {
+        logging.logIt("autoAddService", "AutoAdd start initialization", 1);
+        //check if service already is registered - main Cfg
+        if(!FM->fExist(getExternalServiceFilename(serviceName).c_str()))
+        {
+            //init main CFG create
+            #ifdef J54J6_SysLogger
+                String message = "Init. creation of mainCFG for Service \"";
+                message += serviceName;
+                message += "\"";
+                logging.logIt("autoAddService", message.c_str(), 1);
+            #endif
+
+            searchForService(serviceName);
+            lastAutoAddRequest.createdAt = millis();
+            lastAutoAddRequest.deleteAfter = timeoutAfterAutoAddWillEnd;
+            lastAutoAddRequest.id = getLastGeneratedId(); 
+            lastAutoAddRequest.searchType = 4; //autoAdd function is used
+            lastAutoAddRequest.serviceName = serviceName;
+            autoAddRunning = true; //start autoAdd loop part
+            logging.logIt("autoAddService", "Init finished - return 2", 1);
+            return 2;
+        }
+        else
+        {
+            if(!FM->fExist(getExternalServiceFilename(serviceName, true).c_str()))
+            {
+                #ifdef J54J6_SysLogger
+                    
+                    String message = "Init. creation of FallbackCFG for Service \"";
+                    message += serviceName;
+                    message += "\"";
+                    logging.logIt("autoAddService", message.c_str(), 0);
+                #endif
+
+                //init main CFG create
+                searchForService(serviceName);
+                lastAutoAddRequest.createdAt = millis();
+                lastAutoAddRequest.deleteAfter = timeoutAfterAutoAddWillEnd;
+                lastAutoAddRequest.id = getLastGeneratedId(); 
+                lastAutoAddRequest.searchType = 4; //autoAdd function is used
+                lastAutoAddRequest.serviceName = serviceName;
+                lastAutoAddRequest.isFallback = true;
+                autoAddRunning = true; //start autoAdd loop part
+                logging.logIt("autoAddService", "Init finished - return 2", 1);
+                return 2;
+            }
+            else
+            {
+                #ifdef J54J6_SysLogger
+                    
+                    String message = "Can't create CFG for Service \"";
+                    message += serviceName;
+                    message += "\" - Fallback and Main already defined - return 3";
+                    logging.logIt("autoAddService", message.c_str(), 0);
+                #endif
+                return 3;
+            } 
+        }        
+    }
+    else if(!autoAddRunning && strcmp(serviceName, "n.S") != 0) //serviceName is "n.S"
+    {
+        #ifdef J54J6_SysLogger
+            if(!autoAddRunning)
+            {
+                logging.logIt("autoAddService", "AutoAddrunning is disabled!", 1);
+            }
+            else
+            {
+                logging.logIt("autoAddService", "Can't add Service \"n.S\" - it's a placeholder!", 1);
+            }
+        #endif
+        return 0;
+    }
+    else if(autoAddRunning) //autoAdd already running - do loop stuff to check for any responses and add new service if needed
+    {
+        logging.logIt("autoAddService", "Auto Add start", 1);
+
+        if(lastAutoAddRequest.id == -1) //lastRequest is > timeout - disable autoRun
+        {
+            #ifdef J54J6_SysLogger
+                logging.logIt("autoAddService", "Can't add Service - timeout reached! disable AutoAddRunning! - return 0", 1);
+            #endif
+            autoAddRunning = false;
+            return 0;
+        }
+        else if(lastAutoAddRequest.id != -1 && lastAutoAddRequest.searchType != 4) //lasRequest was not set by function AutoAdd
+        {
+            #ifdef J54J6_SysLogger
+                
+                logging.logIt("autoAddService", "Schedule Problem - lastRequest not set by autoAdd - wrong searchType - disable autoAdd loop and return false", 1);
+            #endif
+            autoAddRunning = false;
+            return 0;
+        }
+        //working normal
+        if(lastAutoAddRequest.id != -1 && lastAutoAddRequest.searchType == 4)
+        {
+            logging.logIt("autoAddService", "Work Mode", 1);
+            StaticJsonDocument<425> lastFetched = getLastData();
+
+            /*
+                Check if lastFetched Data have the right Syntax and Values needed to add new Service
+            */
+            if(!lastFetched.containsKey("id") || !lastFetched.containsKey("serviceName") || !lastFetched.containsKey("ip") || !lastFetched.containsKey("mac") || !lastFetched.containsKey("servicePort"))
+            {
+                return 10;
+            }
+            else
+            {
+                #ifdef J54J6_SysLogger
+                    logging.logIt("autoAddService", "Received useable Packet", 1);
+                #endif
+
+                //lastReceived Packet does contain all needed keys to create a new Service - check for id and serviceName
+                String castedLastRequestID = String(lastAutoAddRequest.id);
+                String castedLastReceivedID = lastFetched["id"];
+
+                castedLastReceivedID.replace(" ", "");
+                castedLastRequestID.replace(" ", "");
+
+                if(castedLastRequestID == castedLastReceivedID)
+                {
+                    logging.logIt("autoAddService", "ID is matching", 1);
+                    //same id - start adding new service
+                    if(!lastAutoAddRequest.isFallback)
+                    {
+                        logging.logIt("autoAddService", "Start adding main CFG", 1);
+                        /*
+                            Creating main Service Cfg
+                        */
+                        if(!FM->fExist(getExternalServiceFilename(lastAutoAddRequest.serviceName, false).c_str()))
+                        {
+                            //create mainServiceCfg
+                            #ifdef J54J6_SysLogger
+                                logging.logIt("autoAddService", "Creating new Service Main CFG", 1);
+                            #endif
+
+                            if(!FM->createFile(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str()))
+                            {
+                                #ifdef J54J6_SysLogger
+                                    logging.logIt("autoAddService", "Can't create new File - create File returns false! - ERROR!", 5);
+                                #endif
+                                classControl->newReport("Can't create new File - createFile() return false!", 378, 5, true);
+                                lastAutoAddRequest.reset();
+                                autoAddRunning = false;
+                                return 0;
+                            }
+                            else
+                            {
+                                #ifdef J54J6_SysLogger
+                                    logging.logIt("autoAddService", "File created - paste Content", 1);
+                                #endif
+                                bool ipAdded = FM->appendJsonKey(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str(), "ip", lastFetched["ip"]);
+                                bool macAdded = FM->appendJsonKey(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str(), "mac", lastFetched["mac"]);
+                                bool portAdded = FM->appendJsonKey(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str(), "port", lastFetched["servicePort"]);
+
+                                if(ipAdded && macAdded && portAdded)
+                                {
+                                    #ifdef J54J6_SysLogger
+                                        
+                                        String message = "New Service Main CFG \"";
+                                        message += lastAutoAddRequest.serviceName;
+                                        message += "\" successfully added - return true";
+                                        logging.logIt("autoAddService", message.c_str());
+                                    #endif
+
+                                    String data = FM->readFile(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str());
+
+                                    //for debug
+                                    /*
+                                    Serial.println("--------------------------------");
+                                    Serial.println(data);
+                                    Serial.println("--------------------------------");
+                                    */
+
+
+                                    lastAutoAddRequest.reset();
+                                    autoAddRunning = false;
+                                    addDelay.addNewNode(lastAutoAddRequest.serviceName);
+                                    return 1;
+                                }
+                                else
+                                {
+                                    #ifdef J54J6_SysLogger
+                                        
+                                        String message = "New Service Main CFG \"";
+                                        message += lastAutoAddRequest.serviceName;
+                                        message += "\" can't be added - Error while insert JSON- return 0";
+                                        logging.logIt("autoAddService", message.c_str(), 2);
+                                    #endif
+                                    lastAutoAddRequest.reset();
+                                    autoAddRunning = false;
+                                    return 0;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            /*
+                                File already exist - check if configured too (contains any key/value) and end autoAdd
+                            */
+                            if(FM->checkForKeyInJSONFile(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str(), "ip") && FM->checkForKeyInJSONFile(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str(), "mac") && FM->checkForKeyInJSONFile(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str(), "port")) //file has config
+                            {
+                                #ifdef J54J6_SysLogger
+                                    logging.logIt("autoAddService", "Can't create Servicefile - service already configured - stop AutoAdd - return true", 1);
+                                #endif
+                                autoAddRunning = 0;
+                                return 1;
+                            }
+                            else
+                            {
+                                #ifdef J54J6_SysLogger
+                                    logging.logIt("autoAddService", "Can't create Servicefile - servicefile already exist - but not correct configured! - remove It", 2);
+                                #endif
+                                if(FM->fDelete(getExternalServiceFilename(lastAutoAddRequest.serviceName).c_str()))
+                                {
+                                    #ifdef J54J6_SysLogger
+                                    logging.logIt("autoAddService", "File removed! - try to Add the Config", 1);
+                                    #endif
+                                    static short i = 0;
+
+                                    if(i < 3)
+                                    {
+                                        i++;
+                                        int res = autoAddService();
+                                        if(res == 1)
+                                        {
+                                            i = 4;
+                                            return 1;
+                                            ~i;
+
+                                        }
+                                    }
+                                    else
+                                    {
+                                        ~i;
+                                        return 0;
+                                    }
+                                }
+                                else
+                                {
+                                    #ifdef J54J6_SysLogger
+                                    logging.logIt("autoAddService", "Can't remove File! - End with Error", 2);
+                                    #endif
+                                    autoAddRunning = false;
+                                    return 0;
+                                }
+                                
+                            }   
+                        }
+                    }
+                    else 
+                    {
+                        /*
+                            Creating Fallback Service CFG
+                        */
+                        #ifdef J54J6_SysLogger
+                            logging.logIt("autoAddService", "Try to create Fallback Conf - start", 1);
+                        #endif
+                        if(!FM->fExist(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str()))
+                        {
+
+                            //create mainServiceCfg
+                            #ifdef J54J6_SysLogger
+                                logging.logIt("autoAddService", "Creating new Service Fallback CFG");
+                            #endif
+
+                            if(!FM->createFile(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str()))
+                            {
+                                #ifdef J54J6_SysLogger
+                                    
+                                    logging.logIt("autoAddService", "Can't create new File - create File returns false! - ERROR!", 2);
+                                #endif
+                                classControl->newReport("Can't create new File (fallback service) - createFile() returns false!", 378, 5, true);
+                                lastAutoAddRequest.reset();
+                                autoAddRunning = false;
+                                return 0;
+                            }
+                            else
+                            {
+                                bool ipAdded = FM->appendJsonKey(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str(), "ip", lastFetched["ip"]);
+                                bool macAdded = FM->appendJsonKey(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str(), "mac", lastFetched["mac"]);
+                                bool portAdded = FM->appendJsonKey(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str(), "port", lastFetched["servicePort"]);
+
+                                if(ipAdded && macAdded && portAdded)
+                                {
+                                    #ifdef J54J6_SysLogger
+                                        
+                                        String message = "New Service Fallback CFG \"";
+                                        message += lastAutoAddRequest.serviceName;
+                                        message += "\" successfully added - return true";
+                                        logging.logIt("autoAddService", message.c_str());
+                                    #endif
+
+                                    String data = FM->readFile(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str());
+
+                                    //for debug
+                                    /*
+                                    Serial.println("--------------------------------");
+                                    Serial.println(data);
+                                    Serial.println("--------------------------------");
+                                    */
+
+                                    lastAutoAddRequest.reset();
+                                    autoAddRunning = false;
+                                    addDelay.addNewNode(lastAutoAddRequest.serviceName);   
+                                    return 1;
+                                }
+                                else
+                                {
+                                    #ifdef J54J6_SysLogger
+                                        
+                                        String message = "New Service Fallback CFG \"";
+                                        message += lastAutoAddRequest.serviceName;
+                                        message += "\" can't be added - Error while insert JSON- return false";
+                                        logging.logIt("autoAddService", message.c_str(), 2);
+                                    #endif
+                                    lastAutoAddRequest.reset();
+                                    autoAddRunning = false;
+                                    return 0;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            /*
+                                File already exist - check if configured too (contains any key/value) and end autoAdd
+                            */
+                           #ifdef J54J6_SysLogger
+                                logging.logIt("autoAddService", "Check if fallback file is configured");
+                            #endif
+                            if(FM->checkForKeyInJSONFile(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str(), "ip") && FM->checkForKeyInJSONFile(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str(), "mac") && FM->checkForKeyInJSONFile(getExternalServiceFilename(lastAutoAddRequest.serviceName, true).c_str(), "port")) //file has config
+                            {
+                                #ifdef J54J6_SysLogger
+                                    
+                                    logging.logIt("autoAddService", "Can't create Service Fallback file - service already configured - stop AutoAdd - return true", 1);
+                                #endif
+                                autoAddRunning = false;
+                                return 1;
+                            }
+                            else
+                            {
+                                #ifdef J54J6_SysLogger
+                                    
+                                    logging.logIt("autoAddService", "Can't create Service Fallback file - servicefile already exist - but not correct configured! - stop AutoAdd - return false", 2);
+                                #endif
+                                autoAddRunning = false;
+                                return 0;
+                            }   
+                        }
+                    }//create main or fallback cfg - else end - create fallback(else)
+                } //id of lastRequest and lastFetched are matching if ot - do nothing
+            }//lastFetched contains all keys (else block) 
+        }//check for correct id and searchType - if not match - do nothing   
+    } //loop stuff - else
+    else
+    {
+        logging.logIt("autoAddService", "Unexcepted State!", 1);
+    }
+return 2;
